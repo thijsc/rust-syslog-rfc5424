@@ -187,9 +187,6 @@ fn parse_sde(sde: &str) -> ParseResult<((String, ParsedSDParams), &str)> {
 
 fn parse_sd(structured_data_raw: &str) -> ParseResult<(StructuredData, &str)> {
     let mut sd = StructuredData::new_empty();
-    if let Some(rest) = structured_data_raw.strip_prefix('-') {
-        return Ok((sd, rest));
-    }
     let mut rest = structured_data_raw;
     while !rest.is_empty() {
         let (sd_id, params) = take_item!(parse_sde(rest), rest);
@@ -360,9 +357,22 @@ fn parse_message_s(m: &str) -> ParseResult<SyslogMessage> {
         Err(_) => ProcId::Name(s),
     });
     take_char!(rest, ' ');
-    let msgid = take_item!(parse_term(rest, 1, 32), rest);
+    let mut msgid = None;
+    rest = match maybe_expect_char!(rest, '-') {
+        Some(r) => r,
+        None => {
+            msgid = take_item!(parse_term(rest, 1, 32), rest);
+            take_char!(rest, ' ');
+            take_char!(rest, '-');
+            rest
+        },
+    };
     take_char!(rest, ' ');
-    let sd = take_item!(parse_sd(rest), rest);
+    let sd = if rest.starts_with('[') {
+        take_item!(parse_sd(rest), rest)
+    } else {
+        StructuredData::new_empty()
+    };
     rest = match maybe_expect_char!(rest, ' ') {
         Some(r) => r,
         None => rest,
@@ -472,6 +482,7 @@ mod tests {
         assert_eq!(msg.hostname, Some(String::from("host1")));
         assert_eq!(msg.appname, Some(String::from("CROND")));
         assert_eq!(msg.procid, Some(message::ProcId::PID(10391)));
+        assert!(msg.msgid.is_none());
         assert_eq!(msg.msg, String::from("some_message"));
         assert_eq!(msg.timestamp, Some(1452816241));
         assert_eq!(msg.sd.len(), 1);
@@ -480,6 +491,51 @@ mod tests {
             .find_tuple("meta", "sequenceId")
             .expect("Should contain meta sequenceId");
         assert_eq!(v, "29");
+    }
+
+    #[test]
+    fn test_complex_with_msgid() {
+        let msg = parse_message("<78>1 2016-01-15T00:04:01+00:00 host1 CROND 10391 id - [meta sequenceId=\"29\"] some_message").expect("Should parse complex message");
+        assert_eq!(msg.facility, SyslogFacility::LOG_CRON);
+        assert_eq!(msg.severity, SyslogSeverity::SEV_INFO);
+        assert_eq!(msg.hostname, Some(String::from("host1")));
+        assert_eq!(msg.appname, Some(String::from("CROND")));
+        assert_eq!(msg.procid, Some(message::ProcId::PID(10391)));
+        assert_eq!(msg.msgid, Some("id".to_string()));
+        assert_eq!(msg.msg, String::from("some_message"));
+        assert_eq!(msg.timestamp, Some(1452816241));
+        assert_eq!(msg.sd.len(), 1);
+        let v = msg
+            .sd
+            .find_tuple("meta", "sequenceId")
+            .expect("Should contain meta sequenceId");
+        assert_eq!(v, "29");
+    }
+
+    #[test]
+    fn test_complex_without_sd() {
+        let msg = parse_message("<78>1 2016-01-15T00:04:01+00:00 host1 CROND 10391 - some_message").expect("Should parse complex message");
+        assert_eq!(msg.facility, SyslogFacility::LOG_CRON);
+        assert_eq!(msg.severity, SyslogSeverity::SEV_INFO);
+        assert_eq!(msg.hostname, Some(String::from("host1")));
+        assert_eq!(msg.appname, Some(String::from("CROND")));
+        assert_eq!(msg.procid, Some(message::ProcId::PID(10391)));
+        assert!(msg.msgid.is_none());
+        assert_eq!(msg.msg, String::from("some_message"));
+        assert_eq!(msg.timestamp, Some(1452816241));
+    }
+
+    #[test]
+    fn test_complex_with_msgid_without_sd() {
+        let msg = parse_message("<78>1 2016-01-15T00:04:01+00:00 host1 CROND 10391 id - some_message").expect("Should parse complex message");
+        assert_eq!(msg.facility, SyslogFacility::LOG_CRON);
+        assert_eq!(msg.severity, SyslogSeverity::SEV_INFO);
+        assert_eq!(msg.hostname, Some(String::from("host1")));
+        assert_eq!(msg.appname, Some(String::from("CROND")));
+        assert_eq!(msg.procid, Some(message::ProcId::PID(10391)));
+        assert_eq!(msg.msgid, Some("id".to_string()));
+        assert_eq!(msg.msg, String::from("some_message"));
+        assert_eq!(msg.timestamp, Some(1452816241));
     }
 
     #[test]
